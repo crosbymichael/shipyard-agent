@@ -1,5 +1,5 @@
 all:
-	@go get github.com/fsouza/go-dockerclient
+	@go get -d -v ./...
 	@cd ./agent && go build -o ../shipyard-agent
 
 fmt:

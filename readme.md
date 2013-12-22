@@ -2,7 +2,7 @@
 This is the Shipyard Agent.  It goes on your Docker hosts.
 
 # Building
-Simple run `make`
+* `make`
 
 # Usage
 You first need to register with your Shipyard instance.  You can do this via:
