@@ -19,7 +19,7 @@ import (
 var DockerURL = flag.String("host", "unix:///var/run/docker.sock", "Docker URL")
 var ShipyardURL = flag.String("url", "", "Shipyard URL")
 var ShipyardKey = flag.String("key", "", "Shipyard Agent Key")
-var RunInterval = flag.Int("interval", 15, "Run interval")
+var RunInterval = flag.Int("interval", 5, "Run interval")
 var Register = flag.Bool("register", false, "Register Agent with Shipyard")
 
 type AgentData struct {
