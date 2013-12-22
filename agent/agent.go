@@ -39,7 +39,7 @@ func doPostRequest(path string, body io.Reader) ([]byte, int) {
 	req.Header.Set("Authorization", fmt.Sprintf("AgentKey:%v", *ShipyardKey))
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Println("Error sending containers to Shipyard: ", err)
+		fmt.Println("Error sending request to Shipyard: ", err)
 		return nil, 500
 	}
 	defer resp.Body.Close()
