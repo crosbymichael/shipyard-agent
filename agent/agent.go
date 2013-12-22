@@ -12,15 +12,18 @@ import (
     "io/ioutil"
     "encoding/json"
     "net/http"
+    "net/http/httputil"
     "net/url"
     "strings"
+    "strconv"
 )
 
-var DockerURL = flag.String("host", "unix:///var/run/docker.sock", "Docker URL")
+var DockerURL = flag.String("host", "http://127.0.0.1:4243", "Docker URL")
 var ShipyardURL = flag.String("url", "", "Shipyard URL")
 var ShipyardKey = flag.String("key", "", "Shipyard Agent Key")
 var RunInterval = flag.Int("interval", 5, "Run interval")
 var Register = flag.Bool("register", false, "Register Agent with Shipyard")
+var Port = flag.Int("port", 4500, "Agent Listen Port")
 
 type AgentData struct {
     Key     string `json:"key"`
@@ -82,7 +85,7 @@ func register() {
     fmt.Println("Registering with ", *ShipyardURL)
     registerURL := fmt.Sprintf("%v/agent/register/", *ShipyardURL)
     hostname, _ := os.Hostname()
-    vals := url.Values{"name": {hostname}}
+    vals := url.Values{"name": {hostname}, "port": {strconv.Itoa(*Port)}}
     resp, _ := http.PostForm(registerURL, vals)
     defer resp.Body.Close()
     body, _ := ioutil.ReadAll(resp.Body)
@@ -107,6 +110,9 @@ func main() {
         register()
     } else {
         fmt.Println("Shipyard Agent", fmt.Sprintf(" (%s)", *ShipyardURL))
+        u, _ := url.Parse(*DockerURL)
+        proxy := httputil.NewSingleHostReverseProxy(u)
+        go http.ListenAndServe(fmt.Sprintf(":%v", *Port), proxy)
         listen(duration, run)
     }
 }
