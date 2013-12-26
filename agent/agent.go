@@ -5,7 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/dotcloud/docker"
-	dockerclient "github.com/fsouza/go-dockerclient"
+	dockerclient "github.com/shipyard/go-dockerclient"
 	"io"
 	"io/ioutil"
 	"net/http"
