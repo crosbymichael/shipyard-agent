@@ -8,6 +8,8 @@ import (
 	dockerclient "github.com/shipyard/go-dockerclient"
 	"io"
 	"io/ioutil"
+        "log"
+        "net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -115,6 +117,41 @@ func main() {
 		fmt.Println("Shipyard Agent", fmt.Sprintf(" (%s)", *ShipyardURL))
 		u, _ := url.Parse(*DockerURL)
 		proxy := httputil.NewSingleHostReverseProxy(u)
+                director := proxy.Director
+                urlParts, _ := url.Parse(*ShipyardURL)
+                shipyardHost := strings.Split(urlParts.Host, ":")[0]
+                // HACK: this is a custom director that uses a custom
+                // endpoint providing a simple 404 for "unauthorized" hosts.
+                // eventually this will get more sophisticated but provides 
+                // simple host-based auth for now
+                proxy.Director = func(req *http.Request) {
+                        src := strings.Split(req.RemoteAddr, ":")[0]
+                        shipyardIPs, _ := net.LookupIP(shipyardHost)
+                        validIP := false
+                        // check resolved IPs for host and check if valid
+                        for _, i := range shipyardIPs {
+                            if src == i.String() {
+                                validIP = true
+                                break
+                            }
+                            validIP = false
+                        }
+                        if validIP {
+                                log.Printf("Request from %s", src)
+                                director(req)
+
+                        } else {
+                                log.Printf("Unauthorized request from: %s to %s", src, req.URL.Path)
+                                req.URL.Scheme = "http"
+                                req.URL.Host = fmt.Sprintf("localhost:%s", *Port)
+                                req.URL.Path = "/unauth"
+                                director(req)
+                        }
+                }
+                // if an "unauthorized" host connects (i.e. not the shipyard host)
+                http.HandleFunc("/unauth", func(w http.ResponseWriter, r *http.Request) {
+                        http.NotFound(w, r)
+                })
 		go http.ListenAndServe(fmt.Sprintf(":%v", *Port), proxy)
 		listen(duration, run)
 	}
