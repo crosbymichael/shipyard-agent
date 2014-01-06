@@ -26,7 +26,7 @@ var Register = flag.Bool("register", false, "Register Agent with Shipyard")
 var Version = flag.Bool("version", false, "Shows Agent Version")
 var Port = flag.Int("port", 4500, "Agent Listen Port")
 
-const VERSION string = "0.0.3"
+const VERSION string = "0.0.4"
 
 type AgentData struct {
 	Key string `json:"key"`
