@@ -126,7 +126,7 @@ func main() {
 		director := proxy.Director
 		proxy.Director = func(req *http.Request) {
 			src := strings.Split(req.RemoteAddr, ":")[0]
-			log.Printf("Request from %s", src)
+                        log.Printf("Request from %s: %s", src, req.URL.Path)
 			director(req)
 		}
 		go http.ListenAndServe(fmt.Sprintf(":%v", *Port), proxy)
