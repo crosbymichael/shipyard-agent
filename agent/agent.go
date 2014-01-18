@@ -1,11 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"github.com/dotcloud/docker"
-	dockerclient "github.com/shipyard/go-dockerclient"
+	"github.com/shipyard/go-dockerclient"
 	"io"
 	"io/ioutil"
 	"log"
@@ -13,123 +14,206 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-var DockerURL = flag.String("host", "http://127.0.0.1:4243", "Docker URL")
-var ShipyardURL = flag.String("url", "", "Shipyard URL")
-var ShipyardKey = flag.String("key", "", "Shipyard Agent Key")
-var RunInterval = flag.Int("interval", 5, "Run interval")
-var Register = flag.Bool("register", false, "Register Agent with Shipyard")
-var Version = flag.Bool("version", false, "Shows Agent Version")
-var Port = flag.Int("port", 4500, "Agent Listen Port")
-
 const VERSION string = "0.0.4"
 
-type AgentData struct {
-	Key string `json:"key"`
-}
-type ContainerData struct {
-	Container docker.APIContainers
-	Meta      *docker.Container
+var (
+	dockerURL     string
+	shipyardURL   string
+	shipyardKey   string
+	runInterval   int
+	registerAgent bool
+	version       bool
+	port          int
+)
+
+type (
+	AgentData struct {
+		Key string `json:"key"`
+	}
+
+	ContainerData struct {
+		Container docker.APIContainers
+		Meta      *docker.Container
+	}
+
+	Job struct {
+		Path string
+		Data interface{}
+	}
+)
+
+func init() {
+	flag.StringVar(&dockerURL, "host", "http://127.0.0.1:4243", "Docker URL")
+	flag.StringVar(&shipyardURL, "url", "", "Shipyard URL")
+	flag.StringVar(&shipyardKey, "key", "", "Shipyard Agent Key")
+	flag.IntVar(&runInterval, "interval", 5, "Run interval")
+	flag.BoolVar(&registerAgent, "register", false, "Register Agent with Shipyard")
+	flag.BoolVar(&version, "version", false, "Shows Agent Version")
+	flag.IntVar(&port, "port", 4500, "Agent Listen Port")
+
+	flag.Parse()
+
+	if version {
+		fmt.Println(VERSION)
+		os.Exit(0)
+	}
+
+	if shipyardURL == "" {
+		fmt.Println("Error: You must specify a Shipyard URL")
+		os.Exit(1)
+	}
 }
 
-func doPostRequest(path string, body io.Reader) ([]byte, int) {
+func updater(jobs <-chan *Job, group *sync.WaitGroup) {
+	group.Add(1)
+	defer group.Done()
 	client := &http.Client{}
-	appUrl := fmt.Sprintf("%v%v", *ShipyardURL, path)
-	req, _ := http.NewRequest("POST", appUrl, body)
-	req.Header.Set("Authorization", fmt.Sprintf("AgentKey:%v", *ShipyardKey))
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Println("Error sending request to Shipyard: ", err)
-		return nil, 500
+
+	for obj := range jobs {
+		buf := bytes.NewBuffer(nil)
+		if err := json.NewEncoder(buf).Encode(obj.Data); err != nil {
+			log.Println(err)
+			continue
+		}
+
+		req, err := http.NewRequest("POST", path.Join(shipyardURL, obj.Path), buf)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+
+		req.Header.Set("Authorization", fmt.Sprintf("AgentKey:%s", shipyardKey))
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+		defer resp.Body.Close()
 	}
-	defer resp.Body.Close()
-	b, _ := ioutil.ReadAll(resp.Body)
-	return b, resp.StatusCode
 }
 
-func pushContainers() {
-	client, err := dockerclient.NewClient(*DockerURL)
+func pushContainers(client *dockerclient.Client, jobs chan *Job) {
+	containers, err := client.ListContainers(dockerclient.ListContainersOptions{All: true})
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
-	opts := dockerclient.ListContainersOptions{All: true}
-	containers, _ := client.ListContainers(opts)
 	data := make([]ContainerData, len(containers))
 	for x, c := range containers {
-		i, _ := client.InspectContainer(c.ID)
+		i, err := client.InspectContainer(c.ID)
+		if err != nil {
+			log.Fatal(err)
+		}
 		containerData := ContainerData{Container: c, Meta: i}
 		data[x] = containerData
 	}
-	cnt, _ := json.Marshal(data)
-	containerJSON := string(cnt)
-	doPostRequest("/agent/containers/", strings.NewReader(containerJSON))
+
+	jobs <- &Job{
+		Path: "/agent/containers/",
+		Data: data,
+	}
 }
 
-func pushImages() {
-	client, err := dockerclient.NewClient(*DockerURL)
+func pushImages(client *dockerclient.Client, jobs chan *Job) {
+	images, err := client.ListImages(false)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
-	images, _ := client.ListImages(false)
-	imageData, _ := json.Marshal(images)
-	imageJSON := string(imageData)
-	doPostRequest("/agent/images/", strings.NewReader(imageJSON))
+
+	jobs <- &Job{
+		Path: "/agent/images/",
+		Data: images,
+	}
 }
 
-func listen(d time.Duration, f func(time.Time)) {
-	for {
-		f(time.Now())
-		time.Sleep(d)
+func listen(d time.Duration) {
+	var (
+		group = &sync.WaitGroup{}
+		// create chan with a 2 buffer, we use a 2 buffer to sync the go routines so that
+		// no more than two messages are being send to the server at one time
+		jobs = make(chan *Job, 2)
+	)
+
+	client, err := dockerclient.NewClient(dockerURL)
+	if err != nil {
+		log.Fatal(err)
 	}
+
+	go updater(jobs, group)
+
+	for _ := range time.Tick(d) {
+		// TODO: is it ok for 10 of these to be running in parallel or do we need to wait?
+		go pushContainers(client, jobs)
+		go pushImages(client, jobs)
+	}
+
+	// wait for all request to finish processing before returning
+	group.Wait()
 }
 
 // Registers with Shipyard at the specified URL
 func register() {
-	fmt.Println("Registering with ", *ShipyardURL)
-	registerURL := fmt.Sprintf("%v/agent/register/", *ShipyardURL)
-	hostname, _ := os.Hostname()
-	vals := url.Values{"name": {hostname}, "port": {strconv.Itoa(*Port)}}
-	resp, _ := http.PostForm(registerURL, vals)
-	defer resp.Body.Close()
-	body, _ := ioutil.ReadAll(resp.Body)
-	var data AgentData
-	json.Unmarshal(body, &data)
-	fmt.Println("Agent Key: ", data.Key)
-}
+	log.Printf("Registering at %s\n", shipyardURL)
 
-func run(t time.Time) {
-	go pushContainers()
-	go pushImages()
+	hostname, err := os.Hostname()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var (
+		vals = url.Values{"name": {hostname}, "port": {strconv.Itoa(port)}}
+		data AgentData
+	)
+
+	resp, err := http.PostForm(path.Join(shipyardURL, "agent", "register"), vals)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		log.Fatal(err)
+	}
+	log.Println("Agent Key: ", data.Key)
 }
 
 func main() {
-	flag.Parse()
-	if *Version {
-		fmt.Println(VERSION)
-		os.Exit(0)
-	}
-	if *ShipyardURL == "" {
-		fmt.Println("Error: You must specify a Shipyard URL")
-		os.Exit(1)
-	}
-	duration, _ := time.ParseDuration(fmt.Sprintf("%vs", *RunInterval))
-	if *Register {
+	if registerAgent {
 		register()
-	} else {
-		fmt.Println("Shipyard Agent", fmt.Sprintf(" (%s)", *ShipyardURL))
-		u, _ := url.Parse(*DockerURL)
-		proxy := httputil.NewSingleHostReverseProxy(u)
-		director := proxy.Director
-		proxy.Director = func(req *http.Request) {
-			src := strings.Split(req.RemoteAddr, ":")[0]
-                        log.Printf("Request from %s: %s", src, req.URL.Path)
-			director(req)
-		}
-		go http.ListenAndServe(fmt.Sprintf(":%v", *Port), proxy)
-		listen(duration, run)
+		return
+	}
+
+	duration, err := time.ParseDuration(fmt.Sprintf("%ds", runInterval))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Printf("Shipyard Agetn (%s)\n", shipyardURL)
+	u, err := url.Parse(dockerURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var (
+		proxy    = httputil.NewSingleHostReverseProxy(u)
+		director = proxy.Director
+	)
+
+	proxy.Director = func(req *http.Request) {
+		src := strings.Split(req.RemoteAddr, ":")[0]
+		log.Printf("Request from %s: %s\n", src, req.URL.Path)
+		director(req)
+	}
+
+	go listen(duration)
+
+	if err := http.ListenAndServe(fmt.Sprintf(":%d", port), proxy); err != nil {
+		log.Fatal(err)
 	}
 }
