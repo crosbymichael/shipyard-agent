@@ -1,6 +1,8 @@
 # Shipyard Agent
 This is the Shipyard Agent.  It goes on your Docker hosts.
 
+The Shipyard Agent will gather Docker information (containers, images, etc.) from the local Docker and push it to a Shipyard instance.
+
 # Building
 * `make`
 
